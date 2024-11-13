@@ -122,12 +122,12 @@ def get_args_parser():
                         help='resume from checkpoint')
 
     parser.add_argument('--low_shot', default='', type=str, help='resume from checkpoint')
+    parser.add_argument('--score_net_depth', default=12, type=int, help='resume from checkpoint')
     return parser
 
 
 def main(args):
     misc.init_distributed_mode(args)
-    print("xxxxxx")
     print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
     print("{}".format(args).replace(', ', ',\n'))
 

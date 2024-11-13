@@ -163,6 +163,7 @@ def get_args_parser():
     parser.add_argument('--dino_head_idx', default=-1, type=int,
                         help='Perform evaluation only')
     parser.add_argument('--ltrp_cluster_ratio', type=float, default=0.7, )
+    parser.add_argument('--score_net_depth', type=int, default=12, )
     return parser
 
 
@@ -174,7 +175,7 @@ def main(args):
 
     device = torch.device(args.device)
 
-    # fix the seed for reproducibility
+    # fix the seed for reproducibtility
     seed = args.seed + misc.get_rank()
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -272,13 +273,14 @@ def main(args):
 
         # load pre-trained model
         msg = model.load_state_dict(checkpoint_model, strict=False)
-        print(msg)
+        print("load pre-trained model ", msg)
 
         # manually initialize fc layer
         trunc_normal_(model.head.weight, std=2e-5)
 
-    if args.finetune_ltrp:
+    if args.finetune_ltrp and not args.eval:
         checkpoint = torch.load(args.finetune_ltrp, map_location='cpu')
+        print("pre loading ckpt ", score_net)
         if args.score_net.startswith('dpc_knn'):
             state_dict = checkpoint
             # remove `module.` prefix
@@ -288,22 +290,43 @@ def main(args):
             checkpoint_model = {k.replace("encoder.", ""): v for k, v in state_dict.items()}
             model.score_net.init_backbone()
             msg = model.score_net.backbone.load_state_dict(checkpoint_model, strict=False)
-
         elif args.score_net.startswith('gf_net'):
             msg = model.score_net.load(checkpoint)
         elif args.score_net.startswith('IA_RED'):
             msg = model.score_net.model.load_state_dict(checkpoint)
+        elif args.score_net.startswith('top_k'):
+            for i, j in checkpoint['model'].items():
+                if 'pos_embed' in i:
+                    checkpoint['model'][i] = torch.cat(
+                        [checkpoint['model'][i][:, :1, :], checkpoint['model'][i][:, 2:, :]], dim=1)
+                    print('top_k after ', checkpoint['model'][i].shape)
+            msg = model.score_net.load_state_dict(checkpoint["model"], strict=False)
+        elif args.score_net.startswith('dynamic'):
+            msg = model.score_net.load_state_dict(checkpoint['model'])
+        elif args.score_net.startswith('tcformer'):
+            msg = model.score_net.load_state_dict(checkpoint['model'])
+        elif args.score_net.startswith('dge'):
+            msg = model.score_net.vit.load_state_dict(checkpoint['model'])
+        elif args.score_net.startswith('tome'):
+            msg = model.score_net.vit.load_state_dict(checkpoint['model'])
+        elif args.score_net.startswith('A_ViT'):
+            msg = model.score_net.load_state_dict(checkpoint['model'])
+        elif args.score_net.startswith('AdaViT'):
+            msg = model.score_net.vit.load_state_dict(checkpoint['state_dict'])
         else:
             if args.score_net.startswith('evit'):
                 checkpoint_model = checkpoint['model']
 
             elif args.score_net.startswith('moco'):
-                checkpoint_model = OrderedDict()
-                ckpt = checkpoint['state_dict']
-                for k, v in ckpt.items():
-                    if k.startswith('module.encoder_q.'):
-                        checkpoint_model[k[len('module.encoder_q.'):]] = ckpt[k]
-            elif args.score_net.startswith('dino_vit'):
+                # checkpoint_model = OrderedDict()
+                # ckpt = checkpoint['state_dict']
+                # for k, v in ckpt.items():
+                #     if k.startswith('module.encoder_q.'):
+                #         checkpoint_model[k[len('module.encoder_q.'):]] = ckpt[k]
+                state_dict = checkpoint['state_dict']
+                state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+                checkpoint_model = {k.replace("base_encoder.", ""): v for k, v in state_dict.items()}
+            elif args.score_net.startswith('dino_vit_small'):
                 state_dict = checkpoint
                 # remove `module.` prefix
                 state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}

@@ -51,10 +51,10 @@ class VisionTransformer(timm.models.vision_transformer.VisionTransformer):
 
         x = self.norm(x)
 
-        if not only_feature:
-            x = x[:, 0]
-
-        return x
+        if only_feature:
+            return x
+        else:
+            return x[:, 0]
 
     def forward(self, x, mask_idx=None, is_train=True, only_feature=False):
         x = self.forward_features(x, mask_idx, is_train, only_feature)

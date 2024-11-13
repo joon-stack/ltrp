@@ -34,7 +34,7 @@ from engine_finetune import evaluate_offline, train_one_epoch_offline, \
     train_one_epoch_multi_label_coco, evaluate_multi_label_coco
 from factory import get_score_net
 from collections import OrderedDict
-from multi_classification.helper_functions import CocoDetection, ModelEma, OTE_detection, NUS_WIDE_detection
+from multi_classification.helper_functions import CocoDetection, ModelEma, OTE_detection, NUS_WIDE_detection,COCO_CLS_NAME_2_CLS_ID_DICT
 from utils.datasets import build_transform
 from multi_classification.losses import AsymmetricLoss
 from multi_classification.ml_decoder import add_ml_decoder_head
@@ -171,6 +171,7 @@ def get_args_parser():
     # multi classifition
     parser.add_argument('--decoder_embedding', default=768, type=int, )
     parser.add_argument('--count_max', default=0, type=int)
+    parser.add_argument('--filter_list', default='',type=str, help='finetune from checkpoint')
     return parser
 
 
@@ -324,6 +325,7 @@ def main(args):
 
     if args.finetune_ltrp and not args.eval:
         checkpoint = torch.load(args.finetune_ltrp, map_location='cpu')
+        print("pre loading ckpt ", score_net)
         if args.score_net.startswith('dpc_knn'):
             state_dict = checkpoint
             # remove `module.` prefix
@@ -333,6 +335,9 @@ def main(args):
             checkpoint_model = {k.replace("encoder.", ""): v for k, v in state_dict.items()}
             model.score_net.init_backbone()
             msg = model.score_net.backbone.load_state_dict(checkpoint_model, strict=False)
+        elif args.score_net.startswith('grad_cam_self'):
+            checkpoint_model = checkpoint['model']
+            msg = model.score_net.vit.load_state_dict(checkpoint_model)
         elif args.score_net.startswith('gf_net'):
             msg = model.score_net.load(checkpoint)
         elif args.score_net.startswith('IA_RED'):
@@ -341,9 +346,17 @@ def main(args):
             msg = model.score_net.load_state_dict(checkpoint['model'])
         elif args.score_net.startswith('tcformer'):
             msg = model.score_net.load_state_dict(checkpoint['model'])
+        elif args.score_net.startswith('AdaViT'):
+            msg = model.score_net.vit.load_state_dict(checkpoint['state_dict'])
         elif args.score_net.startswith('dge'):
-            # interpolate_pos_embed(model, checkpoint['model'])
-            msg = model.score_net.load_state_dict(checkpoint['model'])
+            msg = model.score_net.vit.load_state_dict(checkpoint['model'])
+        elif args.score_net.startswith('top_k'):
+            for i, j in checkpoint['model'].items():
+                if 'pos_embed' in i:
+                    checkpoint['model'][i] = torch.cat(
+                        [checkpoint['model'][i][:, :1, :], checkpoint['model'][i][:, 2:, :]], dim=1)
+                    print('top_k after ', checkpoint['model'][i].shape)
+            msg = model.score_net.load_state_dict(checkpoint["model"], strict=False)
         elif args.score_net.startswith('tome'):
             msg = model.score_net.vit.load_state_dict(checkpoint['model'])
         elif args.score_net.startswith('A_ViT'):
@@ -353,12 +366,18 @@ def main(args):
                 checkpoint_model = checkpoint['model']
 
             elif args.score_net.startswith('moco'):
-                checkpoint_model = OrderedDict()
-                ckpt = checkpoint['state_dict']
-                for k, v in ckpt.items():
-                    if k.startswith('module.encoder_q.'):
-                        checkpoint_model[k[len('module.encoder_q.'):]] = ckpt[k]
+                # checkpoint_model = OrderedDict()
+                # ckpt = checkpoint['state_dict']
+                # for k, v in ckpt.items():
+                #     if k.startswith('module.encoder_q.'):
+                #         checkpoint_model[k[len('module.encoder_q.'):]] = ckpt[k]
+                state_dict = checkpoint['state_dict']
+                state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+                state_dict = {k.replace("encoder_q.", ""): v for k, v in state_dict.items()}
+                checkpoint_model = {k.replace("base_encoder.", ""): v for k, v in state_dict.items()}
             elif args.score_net.startswith('dino_vit_small'):
+                if 'teacher' in checkpoint.keys():
+                    checkpoint = checkpoint['teacher']
                 state_dict = checkpoint
                 # remove `module.` prefix
                 state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
@@ -410,14 +429,32 @@ def main(args):
 
     misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
     ema_model = ModelEma(model, 0.9997)
+
+    filter_dict = None
+    if args.filter_list != '':
+        with open(args.filter_list) as f:
+            print('begin filter', args.filter_list)
+            filter_list = f.readlines()
+            filter_list = [dataset_train.cat2cat[COCO_CLS_NAME_2_CLS_ID_DICT[i[:-1]]] for i in filter_list]  #
+            all_labels = np.arange(0, len(COCO_CLS_NAME_2_CLS_ID_DICT))
+            filter_list_averse = np.setdiff1d(all_labels, filter_list)
+            filter_dict = {}
+            filter_dict['seen'] = filter_list_averse
+            filter_dict['un_seen'] = filter_list
+            print('filter_dict', filter_dict)
+
     if args.eval:
-        test_stats = evaluate_multi_label_coco(data_loader_val, model, ema_model, device, args)
-        print(f"mAP of the network on the {len(dataset_val)} test images: {test_stats['mAP']:.1f}%")
+        test_stats = evaluate_multi_label_coco(data_loader_val, model, ema_model, device, args, filter_dict)
+        #print(f"mAP of the network on the {len(dataset_val)} test images: {test_stats['mAP']:.1f}%")
+        print(
+            f"Max mAP, mAP_seen, mAP_unseen: {test_stats['mAP']:.1f}%, {test_stats['mAP_seen']:.1f}% and {test_stats['mAP_unseen']:.1f}%")
         exit(0)
 
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     max_accuracy = 0.0
+
+
 
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
@@ -452,8 +489,12 @@ def main(args):
             test_stats = evaluate_offline(data_loader_val, model, device)
         else:
             # test_stats = evaluate(data_loader_val, model, device)
-            test_stats = evaluate_multi_label_coco(data_loader_val, model, ema_model, device, args)
-        print(f"mAP of the network on the {len(dataset_val)} test images: {test_stats['mAP']:.1f}%")
+            test_stats = evaluate_multi_label_coco(data_loader_val, model, ema_model, device, args, filter_dict)
+        if filter_dict is None:
+            print(
+                f"mAP, mAP on seen and mAP on unseen of the network on the {len(dataset_val)} test images: {test_stats['mAP']:.1f}%")
+        else:
+            print(f"mAP, mAP on seen and mAP on unseen of the network on the {len(dataset_val)} test images: {test_stats['mAP']:.1f}%. {test_stats['mAP_seen']:.1f}%,{test_stats['mAP_unseen']:.1f}% ")
 
         if test_stats['mAP'] > max_accuracy:
             if args.output_dir and misc.is_main_process():
@@ -461,11 +502,23 @@ def main(args):
                     args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                     loss_scaler=loss_scaler, epoch=epoch, name='checkpoint-best.pth')
 
-        max_accuracy = max(max_accuracy, test_stats['mAP'])
-        print(f'Max mAP: {max_accuracy:.2f}%')
+
+            max_accuracy = test_stats['mAP']
+            if filter_dict is not None:
+                max_accuracy_seen = test_stats['mAP_seen']
+                max_accuracy_unseen = test_stats['mAP_unseen']
+
+        if filter_dict is None:
+            print(
+                f'Max mAP, mAP_seen, mAP_unseen: {max_accuracy:.2f}%')
+        else:
+            print(f'Max mAP, mAP_seen, mAP_unseen: {max_accuracy:.2f}%,  {max_accuracy_seen:.2f}% and {max_accuracy_unseen:.2f}%')
 
         if log_writer is not None:
             log_writer.add_scalar('perf/mAp', test_stats['mAP'], epoch)
+            if filter_dict is not None:
+                log_writer.add_scalar('perf/mAp_seen', test_stats['mAP_seen'], epoch)
+                log_writer.add_scalar('perf/mAp_unseen', test_stats['mAP_unseen'], epoch)
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      **{f'test_{k}': v for k, v in test_stats.items()},

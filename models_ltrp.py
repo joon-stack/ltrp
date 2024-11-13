@@ -82,11 +82,21 @@ class LearnToRankPatchMIM(nn.Module):
 
 def ltrp_mae_base_and_vit_small(args, **kwargs):
     mim = mae_vit_base_patch16(norm_pix_loss=True)
-    score_net = get_score_net(score_net='vit_small')
+    score_net = get_score_net(score_net='vit_small', args=args)
     criterion = get_loss(args)
     img_metric = get_img_metric(args)
     model = LearnToRankPatchMIM(mim, score_net, criterion, args.mask_all, args.asymmetric, img_metric)
     return model
+
+
+def ltrp_mae_base_and_vit_base(args, **kwargs):
+    mim = mae_vit_base_patch16(norm_pix_loss=True)
+    score_net = get_score_net(score_net='vit_base', args=args)
+    criterion = get_loss(args)
+    img_metric = get_img_metric(args)
+    model = LearnToRankPatchMIM(mim, score_net, criterion, args.mask_all, args.asymmetric, img_metric)
+    return model
+
 
 
 def ltrp_mae_base_and_vit_tiny(args, **kwargs):
@@ -135,6 +145,13 @@ def ltrp_mae_huge_and_vit_small(args, **kwargs):
                                 img_metric)
     return model
 
+def ltrp_mae_base_and_mobile_former_26m(args, **kwargs):
+    mim = mae_vit_base_patch16(norm_pix_loss=True)
+    score_net = get_score_net(score_net='mobile_former_26m')
+    criterion = get_loss(args)
+    img_metric = get_img_metric(args)
+    model = LearnToRankPatchMIM(mim, score_net, criterion, args.mask_all, args.asymmetric, img_metric)
+    return model
 
 ltrp_base_and_vs = ltrp_mae_base_and_vit_small
 ltrp_base_and_vt = ltrp_mae_base_and_vit_tiny
@@ -142,3 +159,5 @@ ltrp_huge_and_vt = ltrp_mae_huge_and_vit_tiny
 ltrp_base_and_r50 = ltrp_mae_base_and_resnet50
 ltrp_large_and_vs = ltrp_mae_large_and_vit_small
 ltrp_huge_and_vs = ltrp_mae_huge_and_vit_small
+ltrp_base_and_vb = ltrp_mae_base_and_vit_base
+ltrp_base_and_mf26 = ltrp_mae_base_and_mobile_former_26m

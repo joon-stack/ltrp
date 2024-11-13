@@ -20,7 +20,7 @@ from timm.utils import accuracy
 
 import utils.misc as misc
 import utils.lr_sched as lr_sched
-from multi_classification.helper_functions import mAP
+from multi_classification.helper_functions import mAP, COCO_CLS_NAME_2_CLS_ID_DICT
 
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
@@ -56,8 +56,9 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         with torch.cuda.amp.autocast():
             outputs = model(samples)
             loss = criterion(outputs, targets)
-
         loss_value = loss.item()
+
+        #print('loss leaf', loss.is_leaf)
 
         if not math.isfinite(loss_value):
             print("Loss is {}, stopping training".format(loss_value))
@@ -322,8 +323,9 @@ def train_one_epoch_multi_label_coco(model: torch.nn.Module, criterion: torch.nn
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
+
 @torch.no_grad()
-def evaluate_multi_label_coco(data_loader, model, ema_model, device, args):
+def evaluate_multi_label_coco(data_loader, model, ema_model, device, args, filter_dict=None):
     metric_logger = misc.MetricLogger(delimiter="  ")
     header = 'Test:'
 
@@ -331,9 +333,6 @@ def evaluate_multi_label_coco(data_loader, model, ema_model, device, args):
     model.eval()
 
     Sig = torch.nn.Sigmoid()
-    preds_regular = []
-    preds_ema = []
-    targets = []
 
     for batch in metric_logger.log_every(data_loader, 10, header):
         images = batch[0]
@@ -347,15 +346,23 @@ def evaluate_multi_label_coco(data_loader, model, ema_model, device, args):
         with torch.cuda.amp.autocast():
             output_regular = Sig(model(images, only_feature=True)).cpu()
             output_ema = Sig(ema_model.module(images, only_feature=True)).cpu()
+        batch_size = images.shape[0]
+        if filter_dict is None:
+            mAP_score_regular = mAP((target).cpu().numpy(), (output_regular).cpu().numpy())
+            mAP_score_ema = mAP((target).cpu().numpy(), (output_ema).cpu().numpy())
+            metric_logger.meters['mAP'].update(max(mAP_score_regular, mAP_score_ema), n=batch_size)
 
-        # for mAP calculation
-        preds_regular.append(output_regular.cpu().detach())
-        preds_ema.append(output_ema.cpu().detach())
-        targets.append(target.cpu().detach())
+        else:
+            mAP_score_regular, mAP_seen_regular, mAP_unseen_regular, mAP_seen_regular_sub, mAP_unseen_regular_sub = mAP((target).cpu().numpy(), (output_regular).cpu().numpy(), filter_dict)
+            mAP_score_ema, mAP_seen_ema, mAP_unseen_ema, mAP_seen_ema_sub, mAP_unseen_ema_sub = mAP((target).cpu().numpy(), (output_ema).cpu().numpy(), filter_dict)
 
-    mAP_score_regular = mAP(torch.cat(targets).numpy(), torch.cat(preds_regular).numpy())
-    mAP_score_ema = mAP(torch.cat(targets).numpy(), torch.cat(preds_ema).numpy())
+            metric_logger.meters['mAP'].update(max(mAP_score_regular, mAP_score_ema), n=batch_size)
+            metric_logger.meters['mAP_seen'].update(max(mAP_seen_regular, mAP_seen_ema), n=batch_size)
+            metric_logger.meters['mAP_unseen'].update(max(mAP_unseen_regular, mAP_unseen_ema), n=batch_size)
+            metric_logger.meters['mAP_seen_sub'].update(max(mAP_seen_regular_sub, mAP_seen_ema_sub), n=batch_size)
+            metric_logger.meters['mAP_unseen_sub'].update(max(mAP_unseen_regular_sub, mAP_unseen_ema_sub), n=batch_size)
 
-    # metric_logger.synchronize_between_processes()
-    print("mAP score regular {:.2f}, mAP score EMA {:.2f}".format(mAP_score_regular, mAP_score_ema))
-    return {'mAP': max(mAP_score_regular, mAP_score_ema)}
+    metric_logger.synchronize_between_processes()
+    print("Averaged stats:", metric_logger)
+    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+

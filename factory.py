@@ -1,66 +1,56 @@
-import score_net.vit as vit
-from score_net.dino_mlp import DINOHead
+
+from score_net.dino_utils.dino_mlp import DINOHead
 import utils.ltrp_loss as ltrp_loss
 import score_net.evit as evit
 import score_net.grad_cam as grad_cam
-from score_net.moco import moco_res50
+import score_net.moco as moco
 from score_net.dino import dino_vit_small
 from score_net.dpc_knn import dpc_knn
 from score_net.gfnet import gf_net
 from score_net.IA_RED import IA_RED
-from score_net.kmeans import kmeans
-from score_net.vit_dpc_knn import ltrp_dpc_knn
 import utils.metric as metric
-from score_net.restnet import r50
+import score_net.restnet as restnet
 import score_net.ltrp_cluster as ltrp_cluster
 from score_net.dynamicViT import dynamic_vit_small
-from score_net.A_ViT import avit_small_patch16_224
 
-
-# from score_net.DGE import  dge_small_patch16_224
-# from score_net.tcformer import tcformer_small_patch16_224
-# from score_net.tome import tome_small_patch16_224
+from score_net.DGE import  dge_small_patch16_224
+from score_net.tome import tome_small_patch16_224
+from score_net.AdaViT import ada_vit
+from score_net.mobile_former import mobile_former_26m
 
 def get_score_net(args=None, score_net='', **kwargs):
     model = args.score_net if score_net == '' else score_net
-    if model.startswith('ltrp_dpc_knn'):
-        model = ltrp_dpc_knn(
-            patch_size=16, embed_dim=384, depth=12, num_heads=6, mlp_ratio=4, **kwargs)
-    elif model.startswith('ltrp_cluster'):
+    print("get_score_net ", model)
+    if model.startswith('ltrp_cluster'):
         model = ltrp_cluster.__dict__[model](ratio=args.ltrp_cluster_ratio)
-    elif model.startswith('vit'):
-        model = vit.__dict__[model](**kwargs)
+
     elif model.startswith('dino_mlp'):
         model = DINOHead(**kwargs)
     elif model.startswith('gf_net'):
         model = gf_net()
-    elif model.startswith('A_ViT'):
-        model = avit_small_patch16_224()
+    elif model.startswith('AdaViT'):
+        model = ada_vit()
     elif model.startswith('IA_RED'):
         model = IA_RED()
     elif model.startswith('grad_cam'):
-        model = grad_cam.__dict__[model](**kwargs)
+        model = grad_cam.grad_cam_vit(**kwargs)
     elif model.startswith('moco'):
-        model = moco_res50()
+        model = moco.__dict__[model](**kwargs)
     elif model.startswith('dino_vit_small'):
         model = dino_vit_small(head_idx=args.dino_head_idx)
     elif model.startswith('dynamic_vit_small'):
         model = dynamic_vit_small()
     elif model.startswith('dpc_knn'):
         model = dpc_knn()
-    elif model.startswith('kmeans'):
-        model = kmeans()
     elif model.startswith('dge_small'):
-        pass
-        # model = dge_small_patch16_224()
+        model = dge_small_patch16_224()
     elif model.startswith('tcformer'):
         pass
-        # model = tcformer_small_patch16_224()
+        #model = tcformer_small_patch16_224()
     elif model.startswith('tome'):
-        pass
-        # model = tome_small_patch16_224()
-    elif model.startswith('res'):
-        model = r50()
+        model = tome_small_patch16_224(nb_classes=args.nb_classes)
+    elif model.startswith('r'):
+        model = restnet.__dict__[model]()
     elif model.startswith('evit'):
         model = evit.__dict__[model](
             num_classes=1000,
@@ -69,6 +59,8 @@ def get_score_net(args=None, score_net='', **kwargs):
             drop_path_rate=0.1,
             fuse_token=True,
             img_size=(224, 224))
+    elif model.startswith('mobile_former'):
+        model = mobile_former_26m(num_classes=196)
     else:
         print("score net is None")
         return None
@@ -105,3 +97,4 @@ def get_img_metric(args, _img_metric=''):
     else:
         func = None
     return func
+
