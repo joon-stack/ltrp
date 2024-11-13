@@ -1,4 +1,4 @@
-PyTorch implementation and pretrained models for LTRP. For details, see **Learning to Rank Patches for Unbiased Image Redundancy Reduction**.
+PyTorch implementation and pretrained models for LTRP. For details, see **[Learning to Rank Patches for Unbiased Image Redundancy Reduction](https://openaccess.thecvf.com/content/CVPR2024/papers/Luo_Learning_to_Rank_Patches_for_Unbiased_Image_Redundancy_Reduction_CVPR_2024_paper.pdf)**.
 
 <div align="center">
   <img width="100%" alt="LTRP illustration" src="resources/ltrp.png">
