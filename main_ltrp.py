@@ -1,6 +1,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # All rights reserved.
-
+#
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 # --------------------------------------------------------
@@ -8,6 +8,7 @@
 # DeiT: https://github.com/facebookresearch/deit
 # BEiT: https://github.com/microsoft/unilm/tree/master/beit
 # --------------------------------------------------------
+
 import argparse
 import datetime
 import json
@@ -17,7 +18,7 @@ import time
 from pathlib import Path
 import torch
 import torch.backends.cudnn as cudnn
-from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter  # 기존 TensorBoard 로깅
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 from utils.datasets import ImageNetSubset
@@ -28,9 +29,9 @@ from engine_pretrain import train_one_epoch
 import models_ltrp
 from PIL import ImageFile
 from collections import OrderedDict
+import wandb  # WandB 임포트 추가
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
-
 
 def get_args_parser():
     parser = argparse.ArgumentParser('MAE pre-training', add_help=False)
@@ -43,13 +44,10 @@ def get_args_parser():
     # Model parameters
     parser.add_argument('--model', default='ltrp_base_and_vs', type=str, metavar='MODEL',
                         help='Name of model to train')
-
     parser.add_argument('--input_size', default=224, type=int,
                         help='images input size')
-
     parser.add_argument('--mask_ratio', default=0.9, type=float,
                         help='Masking ratio (percentage of removed patches).')
-
     parser.add_argument('--norm_pix_loss', action='store_true',
                         help='Use (per-patch) normalized pixels as targets for computing loss')
     parser.set_defaults(norm_pix_loss=False)
@@ -57,21 +55,18 @@ def get_args_parser():
     # Optimizer parameters
     parser.add_argument('--weight_decay', type=float, default=0.06,
                         help='weight decay (default: 0.05)')
-
     parser.add_argument('--lr', type=float, default=None, metavar='LR',
                         help='learning rate (absolute lr)')
-    parser.add_argument('--blr', type=float, default=1.5e-4, metavar='LR',
+    parser.add_argument('--blr', type=float, default=3.0e-4, metavar='LR',
                         help='base learning rate: absolute_lr = base_lr * total_batch_size / 256')
     parser.add_argument('--min_lr', type=float, default=0., metavar='LR',
                         help='lower lr bound for cyclic schedulers that hit 0')
-
     parser.add_argument('--warmup_epochs', type=int, default=40, metavar='N',
                         help='epochs to warmup LR')
 
     # Dataset parameters
     parser.add_argument('--data_path', default='/datasets01/imagenet_full_size/061417/', type=str,
                         help='dataset path')
-
     parser.add_argument('--output_dir', default='./output_dir',
                         help='path where to save, empty for no saving')
     parser.add_argument('--log_dir', default=None,
@@ -120,16 +115,18 @@ def get_args_parser():
     parser.add_argument('--img_metric', default='', type=str)
     parser.add_argument('--resume_score_net', default='',
                         help='resume from checkpoint')
-
     parser.add_argument('--low_shot', default='', type=str, help='resume from checkpoint')
     parser.add_argument('--score_net_depth', default=12, type=int, help='resume from checkpoint')
     return parser
-
 
 def main(args):
     misc.init_distributed_mode(args)
     print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))
     print("{}".format(args).replace(', ', ',\n'))
+
+    # main process인 경우에만 WandB 초기화
+    if misc.is_main_process():
+        wandb.init(project="mae_pretraining", config=vars(args))
 
     device = torch.device(args.device)
 
@@ -162,7 +159,8 @@ def main(args):
     else:
         sampler_train = torch.utils.data.RandomSampler(dataset_train)
 
-    if global_rank == 0 and args.log_dir is not None:
+    # 기존 TensorBoard 로그 설정 (WandB와 병행 가능)
+    if misc.get_rank() == 0 and args.log_dir is not None:
         os.makedirs(args.log_dir, exist_ok=True)
         log_writer = SummaryWriter(log_dir=args.log_dir)
     else:
@@ -178,10 +176,15 @@ def main(args):
 
     # define the model
     model = models_ltrp.__dict__[args.model](args)
+    print("Model parameters:")
+    for name, param in model.named_parameters():
+        print(f"{name}: requires_grad={param.requires_grad}")
+    total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Total trainable parameters: {total_params}")
+    if total_params == 0:
+        raise ValueError("No trainable parameters found in the model!")
 
-    #
     if args.pretrained_from:
-        # new_ckpt = OrderedDict()
         checkpoint = torch.load(args.pretrained_from, map_location='cpu')
         checkpoint_model = checkpoint['model']
         state_dict = model.state_dict()
@@ -214,7 +217,6 @@ def main(args):
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
         model_without_ddp = model.module
 
-    # following timm: set wd as 0 for bias and norm layers
     param_groups = optim_factory.add_weight_decay(model_without_ddp, args.weight_decay)
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
     print(optimizer)
@@ -224,27 +226,23 @@ def main(args):
         misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
     elif args.resume_from_mae:
         checkpoint = torch.load(args.resume_from_mae, map_location='cpu')
+        print("INFO: checkpoint['model'].keys() = %s" % str(checkpoint['model'].keys()))
         msg = model_without_ddp.mim.load_state_dict(checkpoint['model'], strict=False)
         print("Resume from mae_origin checkpoint %s" % args.resume)
         print(msg)
 
     if args.resume_score_net:
-        # model = get_score_net(ratio=args.score_net)
         ckpt = torch.load(args.resume_score_net, map_location='cpu')
         new_ckpt = OrderedDict()
         ckpt = ckpt['model']
-
         for k, v in ckpt.items():
             if k.startswith('score_net.'):
                 new_ckpt[k[len('score_net.'):]] = ckpt[k]
-
         state_dict = model_without_ddp.score_net.state_dict()
         for k in ['head.weight', 'head.bias', 'patch_embed.proj.weight', 'patch_embed.proj.bias']:
             if k in new_ckpt and new_ckpt[k].shape != state_dict[k].shape:
                 print(f"Removing key {k} from pretrained checkpoint")
                 del new_ckpt[k]
-
-        # interpolate_pos_embed(model_without_ddp.score_net, new_ckpt)
         msg = model_without_ddp.score_net.load_state_dict(new_ckpt, strict=False)
         print("Resume from score net checkpoint %s" % args.resume_score_net)
         print(msg)
@@ -257,21 +255,25 @@ def main(args):
         train_stats = train_one_epoch(
             model, data_loader_train,
             optimizer, device, epoch, loss_scaler,
-            log_writer=log_writer,
+            log_writer=log_writer,  # 기존 log_writer 유지 (WandB와 병행 가능)
             args=args
         )
+        
+        # WandB에 학습 메트릭 기록 (main process인 경우에만)
+        if misc.is_main_process():
+            wandb.log({**{f'train_{k}': v for k, v in train_stats.items()}, 'epoch': epoch})
+
         if args.output_dir and misc.is_main_process():
             if (epoch + 1) % args.save_ckpt_freq == 0 or epoch + 1 == args.epochs:
                 misc.save_model(
                     args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                     loss_scaler=loss_scaler, epoch=epoch)
-
             misc.save_model(
                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                 loss_scaler=loss_scaler, epoch=epoch, name='checkpoint.pth')
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                     'epoch': epoch, }
+                     'epoch': epoch}
 
         if args.output_dir and misc.is_main_process():
             if log_writer is not None:
@@ -282,7 +284,10 @@ def main(args):
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
-
+    
+    # main process인 경우에만 WandB 종료
+    if misc.is_main_process():
+        wandb.finish()
 
 if __name__ == '__main__':
     args = get_args_parser()

@@ -22,7 +22,9 @@ def get_score_net(args=None, score_net='', **kwargs):
     model = args.score_net if score_net == '' else score_net
     print("get_score_net ", model)
     if model.startswith('ltrp_cluster'):
-        model = ltrp_cluster.__dict__[model](ratio=args.ltrp_cluster_ratio)
+        # model = ltrp_cluster.__dict__[model](ratio=args.ltrp_cluster_ratio)
+        model = ltrp_cluster.__dict__[model]()
+        print(f"score net is {model}")
 
     elif model.startswith('dino_mlp'):
         model = DINOHead(**kwargs)

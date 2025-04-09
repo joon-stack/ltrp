@@ -1,0 +1,7 @@
+wandb/
+*.out
+*.sh
+output_dir/
+*.pth
+*.pyc
+*/__pycache__/

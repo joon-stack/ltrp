@@ -16,6 +16,8 @@ class LearnToRankPatchMIM(nn.Module):
         for p in self.mim.parameters():
             p.requires_grad = False
 
+        print("INFO: self.score_net", self.score_net)
+
     def forward_mask_all(self, imgs, mask_ratio):
         # latent [N, Lv+1, D]
         # anchor [N, L + 1, D]
@@ -82,7 +84,7 @@ class LearnToRankPatchMIM(nn.Module):
 
 def ltrp_mae_base_and_vit_small(args, **kwargs):
     mim = mae_vit_base_patch16(norm_pix_loss=True)
-    score_net = get_score_net(score_net='vit_small', args=args)
+    score_net = get_score_net(score_net='ltrp_cluster_vs', args=args)
     criterion = get_loss(args)
     img_metric = get_img_metric(args)
     model = LearnToRankPatchMIM(mim, score_net, criterion, args.mask_all, args.asymmetric, img_metric)

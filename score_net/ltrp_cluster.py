@@ -261,8 +261,7 @@ def ltrp_cluster_vit_tiny_patch14(**kwargs):
     return model
 
 
-ltrp_cluster
-_vt = ltrp_cluster_vit_tiny_patch16
+ltrp_cluster_vt = ltrp_cluster_vit_tiny_patch16
 ltrp_cluster_vs = ltrp_cluster_vit_small_patch16
 ltrp_cluster_vs14 = ltrp_cluster_vit_small_patch14
 ltrp_cluster_vt14 = ltrp_cluster_vit_tiny_patch14

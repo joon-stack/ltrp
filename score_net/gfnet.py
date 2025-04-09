@@ -1,6 +1,7 @@
 import PIL.Image as Image
-import score_net.gfnet.gfnet_resnet as resnet
-from score_net.gfnet.gfnet_utils import *
+import score_net.gfnet_lib.gfnet_resnet as resnet
+from score_net.gfnet_lib.gfnet_utils import *
+
 import torch.multiprocessing
 import torch
 import torch.nn as nn
