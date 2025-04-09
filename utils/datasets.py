@@ -93,6 +93,7 @@ def build_dataset_offline(is_train, args):
 def build_transform(is_train, args):
     mean = IMAGENET_DEFAULT_MEAN
     std = IMAGENET_DEFAULT_STD
+    print("INFO: mean, std", mean, std)
     # train transform
     if is_train:
         if not args.use_mask_idx:
