@@ -7,18 +7,41 @@ from torchvision.transforms import Normalize
 
 @torch.no_grad()
 def l1(anchor, rm_preds, mask):
-    N, _, D = anchor.shape
-    scores = []
-    anchor_masked = anchor[mask].reshape(N, -1, D)
 
-    for rm_pred in rm_preds:
-        each = rm_pred[mask].reshape(N, -1, D)  # [N, L_m, D]
-        score = (anchor_masked - each).abs()
-        score = score.mean(dim=(-1, -2)).unsqueeze(-1)  # [N, 1]
-        scores.append(score)
+    if isinstance(anchor, list):
+        scores = []
+        for i, rm_pred in enumerate(rm_preds):
+            anchor_each = anchor[i].squeeze() # [N, L_m, D]
+            rm_pred_each = rm_pred.squeeze() # [N, L_m, D]
+
+            # print("INFO: anchor_each.shape, rm_pred_each.shape: ", anchor_each.shape, rm_pred_each.shape)
+            
+            score = (anchor_each - rm_pred_each).abs()
+            # print("INFO: score.shape: ", score.shape)
+            score = score.mean(dim=(-1, -2)).unsqueeze(-1)  # [N, 1]
+            # print("INFO: score_after.shape: ", score.shape)
+
+            assert score.shape == (anchor_each.shape[0], 1)
+            scores.append(score)
+    else:
+    
+        N, _, D = anchor.shape
+        scores = []
+        print("INFO: mask: ", mask)
+        anchor_masked = anchor[mask].reshape(N, -1, D)
+
+        for rm_pred in rm_preds:
+            print("INFO: anchor.shape, rm_pred.shape, mask.shape: ", anchor.shape, rm_pred.shape, mask.shape)
+            each = rm_pred[mask].reshape(N, -1, D)  # [N, L_m, D]
+            score = (anchor_masked - each).abs()
+            score = score.mean(dim=(-1, -2)).unsqueeze(-1)  # [N, 1]
+            scores.append(score)
 
     scores = torch.cat(scores, dim=-1)
     return scores
+
+
+
 
 
 def unpatchify(x):

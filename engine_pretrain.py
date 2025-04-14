@@ -35,47 +35,95 @@ def train_one_epoch(model: torch.nn.Module,
 
     if log_writer is not None:
         print('log_dir: {}'.format(log_writer.log_dir))
+    if 'dinowm' in args.model:
+        for data_iter_step, samples in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
+            # we use a per iteration (instead of per epoch) lr scheduler
+            if data_iter_step % accum_iter == 0:
+                lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
+            obs, act, _ = samples
+            for key in obs:
+                obs[key] = obs[key].to(device, non_blocking=True)
+            act = act.to(device, non_blocking=True)
+            with torch.cuda.amp.autocast():
+                loss = model(obs, act, mask_ratio=args.mask_ratio)
 
-    for data_iter_step, (samples, _) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
+            loss_value = loss.item()
 
-        # we use a per iteration (instead of per epoch) lr scheduler
-        if data_iter_step % accum_iter == 0:
-            lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
+            if not math.isfinite(loss_value):
+                print("Loss is {}, stopping training".format(loss_value))
+                sys.exit(1)
 
-        samples = samples.to(device, non_blocking=True)
-        with torch.cuda.amp.autocast():
-            loss = model(samples, mask_ratio=args.mask_ratio)
+            loss /= accum_iter
+            loss_scaler(loss, optimizer, parameters=model.parameters(),
+                        update_grad=(data_iter_step + 1) % accum_iter == 0)
+            if (data_iter_step + 1) % accum_iter == 0:
+                optimizer.zero_grad()
 
-        loss_value = loss.item()
+            torch.cuda.synchronize()
 
-        if not math.isfinite(loss_value):
-            print("Loss is {}, stopping training".format(loss_value))
-            sys.exit(1)
+            metric_logger.update(loss=loss_value)
 
-        loss /= accum_iter
-        loss_scaler(loss, optimizer, parameters=model.parameters(),
-                    update_grad=(data_iter_step + 1) % accum_iter == 0)
-        if (data_iter_step + 1) % accum_iter == 0:
-            optimizer.zero_grad()
+            lr = optimizer.param_groups[0]["lr"]
+            metric_logger.update(lr=lr)
 
-        torch.cuda.synchronize()
+            loss_value_reduce = misc.all_reduce_mean(loss_value)
 
-        metric_logger.update(loss=loss_value)
+            if log_writer is not None and (data_iter_step + 1) % accum_iter == 0:
+                """ We use epoch_1000x as the x-axis in tensorboard.
+                This calibrates different curves when batch size changes.
+                """
+                epoch_1000x = int((data_iter_step / len(data_loader) + epoch) * 1000)
+                log_writer.add_scalar('train_loss', loss_value_reduce, epoch_1000x)
+                log_writer.add_scalar('lr', lr, epoch_1000x)
 
-        lr = optimizer.param_groups[0]["lr"]
-        metric_logger.update(lr=lr)
+        # gather the stats from all processes
+        metric_logger.synchronize_between_processes()
+        print("Averaged stats:", metric_logger)
+        return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
-        loss_value_reduce = misc.all_reduce_mean(loss_value)
 
-        if log_writer is not None and (data_iter_step + 1) % accum_iter == 0:
-            """ We use epoch_1000x as the x-axis in tensorboard.
-            This calibrates different curves when batch size changes.
-            """
-            epoch_1000x = int((data_iter_step / len(data_loader) + epoch) * 1000)
-            log_writer.add_scalar('train_loss', loss_value_reduce, epoch_1000x)
-            log_writer.add_scalar('lr', lr, epoch_1000x)
+    else:
+        for data_iter_step, (samples, _) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
 
-    # gather the stats from all processes
-    metric_logger.synchronize_between_processes()
-    print("Averaged stats:", metric_logger)
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+            # we use a per iteration (instead of per epoch) lr scheduler
+            if data_iter_step % accum_iter == 0:
+                lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
+            print("INFO: samples: ", samples)
+            samples = samples.to(device, non_blocking=True)
+            print("INFO: samples shape: ", samples.shape, samples.min(), samples.max())
+            with torch.cuda.amp.autocast():
+                loss = model(samples, mask_ratio=args.mask_ratio)
+
+            loss_value = loss.item()
+
+            if not math.isfinite(loss_value):
+                print("Loss is {}, stopping training".format(loss_value))
+                sys.exit(1)
+
+            loss /= accum_iter
+            loss_scaler(loss, optimizer, parameters=model.parameters(),
+                        update_grad=(data_iter_step + 1) % accum_iter == 0)
+            if (data_iter_step + 1) % accum_iter == 0:
+                optimizer.zero_grad()
+
+            torch.cuda.synchronize()
+
+            metric_logger.update(loss=loss_value)
+
+            lr = optimizer.param_groups[0]["lr"]
+            metric_logger.update(lr=lr)
+
+            loss_value_reduce = misc.all_reduce_mean(loss_value)
+
+            if log_writer is not None and (data_iter_step + 1) % accum_iter == 0:
+                """ We use epoch_1000x as the x-axis in tensorboard.
+                This calibrates different curves when batch size changes.
+                """
+                epoch_1000x = int((data_iter_step / len(data_loader) + epoch) * 1000)
+                log_writer.add_scalar('train_loss', loss_value_reduce, epoch_1000x)
+                log_writer.add_scalar('lr', lr, epoch_1000x)
+
+        # gather the stats from all processes
+        metric_logger.synchronize_between_processes()
+        print("Averaged stats:", metric_logger)
+        return {k: meter.global_avg for k, meter in metric_logger.meters.items()}

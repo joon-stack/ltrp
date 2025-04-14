@@ -31,6 +31,8 @@ from PIL import ImageFile
 from collections import OrderedDict
 import wandb  # WandB 임포트 추가
 
+from utils.wm_datasets import load_wall_slice_train_val, imagenet_transform
+
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 def get_args_parser():
@@ -67,7 +69,7 @@ def get_args_parser():
     # Dataset parameters
     parser.add_argument('--data_path', default='/datasets01/imagenet_full_size/061417/', type=str,
                         help='dataset path')
-    parser.add_argument('--output_dir', default='./output_dir',
+    parser.add_argument('--output_dir', default='/shared/s2/lab01/youngjoonjeong/ltrp_test/',
                         help='path where to save, empty for no saving')
     parser.add_argument('--log_dir', default=None,
                         help='path where to tensorboard log')
@@ -117,6 +119,11 @@ def get_args_parser():
                         help='resume from checkpoint')
     parser.add_argument('--low_shot', default='', type=str, help='resume from checkpoint')
     parser.add_argument('--score_net_depth', default=12, type=int, help='resume from checkpoint')
+
+    # ----------- dinowm settings
+    parser.add_argument('--model_ckpt', default='/shared/s2/lab01/youngjoonjeong/dino_wm_oc/outputs/wall_dinovits_full_nope/checkpoints/model_latest.pth', type=str, help='dinowm checkpoint pth')
+    
+
     return parser
 
 def main(args):
@@ -126,7 +133,12 @@ def main(args):
 
     # main process인 경우에만 WandB 초기화
     if misc.is_main_process():
-        wandb.init(project="mae_pretraining", config=vars(args))
+        # 날짜와 시각을 포함한 실험 이름 생성
+        run_name = f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{args.model}"
+        if 'dinowm' in args.model:
+            wandb.init(project="dinowm_pretraining", name=run_name, config=vars(args))
+        else:
+            wandb.init(project="mae_pretraining", name=run_name, config=vars(args))
 
     device = torch.device(args.device)
 
@@ -143,11 +155,25 @@ def main(args):
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
-    dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
-    if args.low_shot != '':
-        print("pre-training with low shot: ", args.low_shot)
-        dataset_train = ImageNetSubset(dataset_train, args.low_shot)
-    print(dataset_train)
+    
+    if 'dinowm' in args.model:
+        transform_train = imagenet_transform(args.input_size)
+        dataset, _ = load_wall_slice_train_val(transform=transform_train,
+                                            normalize_action=True,
+                                            data_path='/shared/s2/lab01/dataset/robotics/wall_single',
+                                            split_ratio=0.9,
+                                            split_mode='random',
+                                            num_hist=1,
+                                            num_pred=1,
+                                            frameskip=5,
+                                            )
+        dataset_train = dataset['train']
+    else:
+        dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
+        
+        if args.low_shot != '':
+            print("pre-training with low shot: ", args.low_shot)
+            dataset_train = ImageNetSubset(dataset_train, args.low_shot)
 
     if True:  # args.distributed:
         num_tasks = misc.get_world_size()
@@ -155,14 +181,22 @@ def main(args):
         sampler_train = torch.utils.data.DistributedSampler(
             dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
         )
+        print("INFO: dataset_train len: ", len(dataset_train))
         print("Sampler_train = %s" % str(sampler_train))
+        print(f"Sampler len: {len(sampler_train)}")
+        print(f"Sampler sample indices (first 10): {list(iter(sampler_train))[:10]}")
     else:
         sampler_train = torch.utils.data.RandomSampler(dataset_train)
 
     # 기존 TensorBoard 로그 설정 (WandB와 병행 가능)
-    if misc.get_rank() == 0 and args.log_dir is not None:
-        os.makedirs(args.log_dir, exist_ok=True)
-        log_writer = SummaryWriter(log_dir=args.log_dir)
+    if misc.get_rank() == 0:
+        if args.log_dir is None and args.output_dir:
+            args.log_dir = os.path.join(args.output_dir, "logs")
+        if args.log_dir is not None:
+            os.makedirs(args.log_dir, exist_ok=True)
+            log_writer = SummaryWriter(log_dir=args.log_dir)
+        else:
+            log_writer = None
     else:
         log_writer = None
 
@@ -171,14 +205,18 @@ def main(args):
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         pin_memory=args.pin_mem,
-        drop_last=True,
+        # drop_last=True,
     )
+
+    
+
+    print("INFO: len(data_loader_train) = %s" % str(len(data_loader_train)))
 
     # define the model
     model = models_ltrp.__dict__[args.model](args)
-    print("Model parameters:")
-    for name, param in model.named_parameters():
-        print(f"{name}: requires_grad={param.requires_grad}")
+    # print("Model parameters:")
+    # for name, param in model.named_parameters():
+    #     print(f"{name}: requires_grad={param.requires_grad}")
     total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Total trainable parameters: {total_params}")
     if total_params == 0:
@@ -265,12 +303,17 @@ def main(args):
 
         if args.output_dir and misc.is_main_process():
             if (epoch + 1) % args.save_ckpt_freq == 0 or epoch + 1 == args.epochs:
+                checkpoint_path = os.path.join(args.output_dir, f'checkpoint-{epoch:04d}.pth')
                 misc.save_model(
                     args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                     loss_scaler=loss_scaler, epoch=epoch)
+                print(f"Saved checkpoint to {checkpoint_path}")
+            
+            latest_checkpoint_path = os.path.join(args.output_dir, 'checkpoint.pth')
             misc.save_model(
                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                 loss_scaler=loss_scaler, epoch=epoch, name='checkpoint.pth')
+            print(f"Saved latest checkpoint to {latest_checkpoint_path}")
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      'epoch': epoch}
@@ -293,5 +336,10 @@ if __name__ == '__main__':
     args = get_args_parser()
     args = args.parse_args()
     if args.output_dir:
+        # 현재 날짜와 시각으로 폴더 이름 생성
+        time_str = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+        model_name = args.model
+        # 출력 경로를 기존 경로 + 날짜_시각 + 모델명으로 설정
+        args.output_dir = os.path.join(args.output_dir, f"{time_str}_{model_name}")
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     main(args)

@@ -20,6 +20,7 @@ class PatchEmbed(nn.Module):
         self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
 
     def forward(self, x):
+        # print("INFO: x.shape: ", x.shape)
         B, C, H, W = x.shape
         # FIXME look at relaxing size constraints
         x = self.proj(x).flatten(2).transpose(1, 2)
